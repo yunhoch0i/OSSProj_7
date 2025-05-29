@@ -5,7 +5,7 @@ from typing import List, Dict, Tuple
 
 
 # 1) API 키 관리
-KAKAO_REST_API_KEY = process.env.KAKAO_REST_API_KEY
+KAKAO_REST_API_KEY = os.getenv("KAKAO_REST_API_KEY")
 HEADERS = {"Authorization": f"KakaoAK {KAKAO_REST_API_KEY}"}
 
 # 2) 카테고리별 POI 개수 조회 함수

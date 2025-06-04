@@ -25,7 +25,7 @@ from function_6_to_10 import normalize_stop_count, node_alignment_scores, balanc
 MIN_ROAD_WIDTH = 6  # 최소 도로 폭 (미터)
 TARGET_CITY = "Gwacheon"  # 대상 도시: 과천시
 # 필요 변수: Kakao Map API 키 (환경 변수 또는 기본값)
-KAKAO_REST_API_KEY = os.getenv("KAKAO_REST_API_KEY", "dad794667e0e1fa0c45dc7d75c891cab")
+KAKAO_REST_API_KEY = os.getenv("KAKAO_REST_API_KEY")
 HEADERS = {"Authorization": f"KakaoAK {KAKAO_REST_API_KEY}"}  # API 요청 헤더
 
 # JSON 데이터 로드 함수

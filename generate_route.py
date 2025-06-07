@@ -14,6 +14,8 @@ from datetime import datetime  # 출력 파일명에 타임스탬프 추가
 import time
 import osmnx as ox
 import pandas as pd
+from dotenv import load_dotenv
+from geopy.distance import geodesic
 
 
 # 적합도 함수 임포트
@@ -24,10 +26,32 @@ from function_6_to_10 import normalize_stop_count, node_alignment_scores, balanc
 # 상수 정의
 MIN_ROAD_WIDTH = 6  # 최소 도로 폭 (미터)
 TARGET_CITY = "Gwacheon"  # 대상 도시: 과천시
-# 필요 변수: Kakao Map API 키 (환경 변수 또는 기본값)
-KAKAO_REST_API_KEY = os.getenv("KAKAO_REST_API_KEY")
-HEADERS = {"Authorization": f"KakaoAK {KAKAO_REST_API_KEY}"}  # API 요청 헤더
+MIN_ROAD_WIDTH = 6
 
+
+# .env 파일에서 환경변수 로드
+load_dotenv()
+
+# REST API 키 가져오기
+KAKAO_REST_API_KEY = os.getenv("KAKAO_REST_API_KEY")
+
+if not KAKAO_REST_API_KEY:
+    raise ValueError("KAKAO_REST_API_KEY 환경변수가 없습니다!")
+
+HEADERS = {"Authorization": f"KakaoAK {KAKAO_REST_API_KEY}"}
+
+
+
+CACHE_FILE = "path_cache.json"
+
+try:
+    with open(CACHE_FILE, "r", encoding="utf-8") as _f:
+        path_cache = json.load(_f)
+except (FileNotFoundError, json.JSONDecodeError):
+    # 파일이 없거나 JSON 형식이 잘못된 경우, 빈 dict로 초기화
+    print(f"⚠️ 캐시 파일 로드 실패({CACHE_FILE}). 새로운 캐시를 생성합니다.")
+    path_cache = {}
+    
 # JSON 데이터 로드 함수
 # 필요 파일: bus_stop.json, 정류장별_통과노선.json, 과천시_교통노드.json, 과천시_교통링크.json
 def load_json_data(filename, encoding="utf-8"):
@@ -70,8 +94,6 @@ link_geo = load_json_data(r"C:\Users\지동우\Downloads\과천시_교통링크.
 
 # Kakao Map API로 경로 조회
 def get_kakao_path(start_lon, start_lat, end_lon, end_lat):
-    """Kakao Mobility Directions API를 사용해 두 지점 간 경로와 거리 조회"""
-    # API 엔드포인트 및 파라미터 설정
     url = "https://apis-navi.kakaomobility.com/v1/directions"
     params = {
         "origin": f"{start_lon},{start_lat}",
@@ -81,19 +103,17 @@ def get_kakao_path(start_lon, start_lat, end_lon, end_lat):
         "car_fuel": "GASOLINE"
     }
     try:
-        # API 호출
         resp = requests.get(url, headers=HEADERS, params=params)
         if resp.status_code != 200:
-            print("요청 실패 상태 코드:", resp.status_code)
-            print("응답 내용:", resp.text)
+            print("  → 요청 실패 상태 코드:", resp.status_code)
+            print("  → 응답 내용:", resp.text)
         resp.raise_for_status()
         data = resp.json()
         if not data.get("routes"):
             return None, 0
         route = data["routes"][0]
-        distance = route["summary"]["distance"] / 1000  # 미터를 킬로미터로 변환
+        distance = route["summary"]["distance"] / 1000  # m → km
         path_coords = []
-        # 경로 좌표 추출
         for section in route.get("sections", []):
             for road in section.get("roads", []):
                 coords = road.get("vertexes", [])
@@ -101,8 +121,14 @@ def get_kakao_path(start_lon, start_lat, end_lon, end_lat):
                     path_coords.append((coords[i+1], coords[i]))  # (lat, lon)
         return path_coords, distance
     except requests.RequestException as e:
-        print(f"경로 조회 오류: {e}")
+        print(f"  → 경로 조회 오류: {e}")
         return None, 0
+
+
+
+
+
+
 
 # A* 알고리즘 구현
 def astar_path(G, start, goal, constraints=None):
@@ -168,65 +194,91 @@ def astar_path(G, start, goal, constraints=None):
 
 # 정류장 데이터 로드
 # 파일: bus_stop.json (형식: [{"정류소ID": str, "정류장명": str, "위도(WGS84)": float, "경도(WGS84)": float, "passengers": float, "population": float}, ...])
-def load_bus_stops(json_data):
-    """JSON 형식의 정류장 데이터 로드 및 유효성 검사"""
-    stops = []
 
-    if not json_data:
-        print("에러: 정류장 JSON 데이터가 없습니다.")
-        return stops
+def load_bus_stops(json_data):
+    """
+    JSON 형식의 정류장 데이터 로드 및 '같은 좌표' 중복 제거
+    """
+    stops = []
+    seen_coords = set()
 
     for i, row in enumerate(json_data):
+        try:
+            lat = float(row["WGS84위도"])
+            lon = float(row["WGS84경도"])
+        except (KeyError, ValueError):
+            print(f"경고: 정류장 {i}의 위도/경도 변환 실패 → 스킵")
+            continue
+
+        coord = (round(lat, 7), round(lon, 7))
+        if coord in seen_coords:
+            continue
+        seen_coords.add(coord)
+
         name = row.get("정류소명", "").strip()
         if not name:
-            print(f"경고: 정류장 {i} - 정류장명이 비어 있습니다. 스킵합니다.")
+            print(f"경고: 정류장 {i} - 이름 없음 → 스킵")
             continue
-        try:
-            lon = float(row["WGS84경도"])
-            lat = float(row["WGS84위도"])
-            stop_id = "stop_" + str(row.get("정류소id", f"{name}_{i}"))
-            stops.append({
-                "id": stop_id,
-                "name": name,
-                "lat": lat,
-                "lon": lon,
-                "passengers": float(row.get("passengers", 100)),
-                "population": float(row.get("population", 500))
-            })
-        except (ValueError, KeyError) as e:
-            print(f"경고: 정류장 {i} - 데이터 오류 ({e}). 스킵합니다.")
 
-    
-    stops = stops[:5]
+        stop_id = "stop_" + str(row.get("정류소id", f"{name}_{i}"))
+        passengers = float(row.get("passengers", 100)) if row.get("passengers") else 100
+        population = float(row.get("population", 500)) if row.get("population") else 500
 
-    print(f"로드된 정류장 수: {len(stops)}")
+        stops.append({
+            "id": stop_id,
+            "name": name,
+            "lat": lat,
+            "lon": lon,
+            "passengers": passengers,
+            "population": population
+        })
+
+    print(f"로드된 정류장 수 (중복 좌표 제거 후): {len(stops)}")
     return stops
 
-# Kakao Map API로 도로 데이터 구축
+
 def fetch_kakao_road_data(stops):
-    """Kakao Map API를 사용해 정류장 간 도로 네트워크 생성"""
-    print(f"{TARGET_CITY}의 Kakao Map API로 도로 데이터를 가져오는 중...")
+    """Kakao Map API를 사용해 정류장 간 도로 네트워크 생성 (필터링 완화 버전)"""
     roads = []
     G_road = nx.Graph()
+    global path_cache
 
     for i, start_stop in enumerate(stops):
         start_id = str(start_stop["id"])
-        # 좌표 유효성 검사
-        if not all(isinstance(coord, (int, float)) for coord in [start_stop["lon"], start_stop["lat"]]):
-            print(f"경고: 정류장 {start_id}의 좌표가 유효하지 않습니다.")
-            continue
         G_road.add_node(start_id, pos=(start_stop["lon"], start_stop["lat"]), name=start_stop["name"])
-        for end_stop in stops[i+1:]:
+
+        for j, end_stop in enumerate(stops[i+1:], start=i+1):
             end_id = str(end_stop["id"])
+            # 좌표 유효성 검사
             if not all(isinstance(coord, (int, float)) for coord in [end_stop["lon"], end_stop["lat"]]):
-                print(f"경고: 정류장 {end_id}의 좌표가 유효하지 않습니다.")
                 continue
-            time.sleep(0.3)
-            # Kakao Map API로 경로 조회
-            path_coords, distance = get_kakao_path(
-                start_stop["lon"], start_stop["lat"],
-                end_stop["lon"], end_stop["lat"]
-            )
+
+            # 직선 거리 계산
+            raw_dist = geodesic((start_stop["lat"], start_stop["lon"]),
+                                (end_stop["lat"], end_stop["lon"])).km
+            # ← 여기서 0.3km 대신 예컨대 1.0km로 변경
+            if raw_dist > 1.0:
+                # 너무 먼 쌍은 일단 스킵
+                continue
+
+            print(f"[{i},{j}] 요청 중: {start_stop['name']} → {end_stop['name']} (직선 거리 = {raw_dist:.3f} km)")
+
+            cache_key = f"{start_id}_{end_id}"
+            if cache_key in path_cache:
+                cached = path_cache[cache_key]
+                path_coords = cached["path_coords"]
+                distance = cached["distance"]
+            else:
+                time.sleep(0.3)
+                path_coords, distance = get_kakao_path(
+                    start_stop["lon"], start_stop["lat"],
+                    end_stop["lon"], end_stop["lat"]
+                )
+                # API 항상 성공하지 않으므로 None 체크
+                if path_coords and distance > 0:
+                    path_cache[cache_key] = {"path_coords": path_coords, "distance": distance}
+                    with open(CACHE_FILE, "w", encoding="utf-8") as _cf:
+                        json.dump(path_cache, _cf, ensure_ascii=False, indent=2)
             if path_coords and distance > 0:
                 G_road.add_edge(start_id, end_id, weight=distance, width=MIN_ROAD_WIDTH)
                 roads.append({
@@ -239,6 +291,8 @@ def fetch_kakao_road_data(stops):
                 })
 
     return {"roads": roads, "road_graph": G_road}
+
+
 
 # 노드 레이블링
 def label_nodes(pois, stops, k=3):
@@ -293,7 +347,7 @@ def label_nodes(pois, stops, k=3):
 def create_city_graph(stops, pois, roads, road_graph):
     """정류장, POI, 도로 데이터를 사용해 도시 그래프 생성"""
     G = nx.Graph()
-    stop_labels = label_nodes(pois, stops)
+    stop_labels = label_nodes([], stops)
 
     # 정류장 노드 추가 (POI 정보 포함)
     for stop in stops:
@@ -301,8 +355,6 @@ def create_city_graph(stops, pois, roads, road_graph):
             print(f"경고: 정류장 {stop['id']}의 좌표가 유효하지 않습니다: ({stop['lon']}, {stop['lat']})")
             continue
         
-        # POI 정보 추가
-        poi_info = stop.get("poi_counts", {})
         
         G.add_node(stop["id"],
                    pos=(stop["lon"], stop["lat"]),
@@ -310,7 +362,7 @@ def create_city_graph(stops, pois, roads, road_graph):
                    label=stop_labels[stop["id"]],
                    passengers=stop.get("passengers", 0),
                    population=stop.get("population", 0),
-                   poi_counts=poi_info)  # POI 정보 추가
+                   poi_counts=stop.get("poi_counts", {}))
 
     # 도로 엣지 추가
     for u, v, data in road_graph.edges(data=True):
@@ -333,7 +385,7 @@ def fitness(route, G, reference_weights, stops_data, pois_data, nodes_data, link
     if len(route) < 2:
         return 0
 
-    # 경로 길이 계산
+    # (1) F1 ~ F2: 경로 길이, 정류장 간 거리 계산
     length = 0
     paths = []
     for i in range(len(route) - 1):
@@ -343,35 +395,42 @@ def fitness(route, G, reference_weights, stops_data, pois_data, nodes_data, link
             length += path_length
             paths.append(path)
         else:
-            return 0
+            return 0  # 유효한 경로가 아니면 적합도 0
 
     # F1: route_length
     L_i = reference_weights.get("avg_length", 5.0)
     L_max = reference_weights.get("max_length", 7.5)
     f1 = route_length(length, L_i, L_max)
 
-    # F2: stop_distance
+    # F2: stop_distance (직선 거리 기준)
     stop_coords = [(G.nodes[stop]["pos"][1], G.nodes[stop]["pos"][0]) for stop in route]
-    distances = [geodesic((stop_coords[i][0], stop_coords[i][1]), (stop_coords[i+1][0], stop_coords[i+1][1])).km
-                 for i in range(len(stop_coords)-1)]
+    distances = [
+        geodesic((stop_coords[i][0], stop_coords[i][1]), (stop_coords[i+1][0], stop_coords[i+1][1])).km
+        for i in range(len(stop_coords) - 1)
+    ]
     D_ideal = reference_weights.get("avg_distance", 0.7)
     sigma = reference_weights.get("sigma", 0.2)
     f2 = stop_distance(distances, D_ideal, sigma)
 
-    # F3: poi_score
+    # ─────────────────────────────────────────
+    # (2) F3: poi_score (정류장별 poi_counts 사용)
     poi_list = []
-    for stop in route:
-        stop_pois = [p for p in pois_data if geodesic((G.nodes[stop]["pos"][1], G.nodes[stop]["pos"][0]), (p["lat"], p["lon"])).km <= 0.3]
-        for p in stop_pois:
-            poi_list.append({"type": p["type"], "count": 1})
     weight_dict = reference_weights.get("poi_weights", {
         "school": 0.3, "hospital": 0.3, "restaurant": 0.2, "cafe": 0.2,
         "shop": 0.2, "park": 0.15, "residential": 0.1, "office": 0.1
     })
-    f3 = poi_score(poi_list, weight_dict)
+
+    for stop in route:
+        counts = G.nodes[stop].get("poi_counts", {})
+        for poi_type, cnt in counts.items():
+            if cnt and cnt > 0:
+                poi_list.append({"type": poi_type, "count": cnt})
+
+    f3 = poi_score(poi_list, weight_dict) if poi_list else 0
+    # ─────────────────────────────────────────
 
     # F4: subway_distance
-    subway_nodes = [n for n in nodes_data if n["node_type"] == "subway"]
+    subway_nodes = [n for n in nodes_data if n.get("node_type") == "subway"]
     subway_dists = []
     for stop in route:
         lat, lon = G.nodes[stop]["pos"][1], G.nodes[stop]["pos"][0]
@@ -381,7 +440,7 @@ def fitness(route, G, reference_weights, stops_data, pois_data, nodes_data, link
     D_scale = reference_weights.get("D_scale", 1000)
     f4 = subway_distance(subway_dists, D_scale) if subway_dists else 0
 
-    # F5: 유동인구 (데이터 없음, 기본값 0)
+    # F5: 유동인구 (데이터 없음 → 0)
     f5 = 0
 
     # F6: normalize_stop_count
@@ -389,53 +448,49 @@ def fitness(route, G, reference_weights, stops_data, pois_data, nodes_data, link
     N_max = reference_weights.get("max_stop_deviation", 5)
     f6 = normalize_stop_count(len(route), N_ideal, N_max)
 
-    # F7, F8: node_alignment_scores
+    # F7, F8: node_alignment_scores (예시: 지하철 노드와 정렬 점수)
     stops_coords = [(G.nodes[stop]["pos"][1], G.nodes[stop]["pos"][0]) for stop in route]
     f7, f8 = node_alignment_scores(stops_coords, nodes_data, node_type="subway", radius=50, scale=100)
 
-    # F9: balanced_length_score
+    # F9: balanced_length_score (도로 링크 정보 활용)
     link_lengths = []
-    
     if isinstance(link_data, list):
         features = link_data
     else:
         features = link_data.get("response", {}).get("result", {}).get("featureCollection", {}).get("features", [])
 
-    # 각 도로의 길이 계산
     for feat in features:
         if "geometry" not in feat or "coordinates" not in feat["geometry"]:
             continue
         coords = feat["geometry"]["coordinates"]
         if len(coords) >= 2:
-            length_m = sum(geodesic(coords[i], coords[i+1]).meters for i in range(len(coords)-1))
+            length_m = sum(geodesic(coords[i], coords[i + 1]).meters for i in range(len(coords) - 1))
             link_lengths.append(length_m)
 
     L_ideal = reference_weights.get("L_ideal", 200)
     L_max = reference_weights.get("L_max", 300)
     f9 = np.mean([balanced_length_score(l, L_ideal, L_max) for l in link_lengths]) if link_lengths else 0
-    
-    
-    
+
     # F10: compute_transfer_score
     route_stop_ids = [stop for stop in route if "stop" in stop]
     f10 = compute_transfer_score(route_stop_ids, transfer_ids)
 
-    # 가중 합 계산
+    # (3) 가중 합
     weights = reference_weights.get("fitness_weights", {
         "w1": 0.100, "w2": 0.100, "w3": 0.150, "w4": 0.100, "w5": 0.050,
         "w6": 0.100, "w7": 0.050, "w8": 0.150, "w9": 0.100, "w10": 0.100
     })
     fitness_score = (
-            weights["w1"] * f1 +
-            weights["w2"] * f2 +
-            weights["w3"] * f3 +
-            weights["w4"] * f4 +
-            weights["w5"] * f5 +
-            weights["w6"] * f6 +
-            weights["w7"] * f7 +
-            weights["w8"] * f8 +
-            weights["w9"] * f9 +
-            weights["w10"] * f10
+        weights["w1"] * f1 +
+        weights["w2"] * f2 +
+        weights["w3"] * f3 +
+        weights["w4"] * f4 +
+        weights["w5"] * f5 +
+        weights["w6"] * f6 +
+        weights["w7"] * f7 +
+        weights["w8"] * f8 +
+        weights["w9"] * f9 +
+        weights["w10"] * f10
     )
 
     return max(0, fitness_score)
@@ -870,18 +925,94 @@ def load_poi_data(filename="bus_stop_poi.csv"):
         print(f"POI 데이터 로드 중 오류 발생: {e}")
         return []
 
-# 메인 함수
-# 필요 변수: reference_weights
 def generate_bus_routes(reference_weights, target_city, num_routes, num_buses, bus_stop_json):
     """버스 노선 생성 및 시각화 메인 함수"""
     print(f"\n1. {target_city}의 교통 네트워크 구축 중...")
     stops = load_bus_stops(bus_stop_json)
-    kakao_data = fetch_kakao_road_data(stops)
-    pois = load_poi_data()
-    target_graph = create_city_graph(stops, pois, kakao_data["roads"], kakao_data["road_graph"])
 
+    # ────────── 전역 캐시 사용 선언 ──────────
+    global path_cache
+
+    # (Optional) 도로 그래프용 노드는 이 단계에서 바로 만들어도 되고,
+    # 아니면 나중에 create_city_graph에서 처리해도 된다.
+    G_road = nx.Graph()
+    roads = []
+
+    # 1-1) 각 정류장 쌍마다 경로 데이터를 가져와서 G_road에 추가하고, 캐시에 저장한다.
+    for i, start_stop in enumerate(stops):
+        start_id = str(start_stop["id"])
+        # 정류장 노드로 추가 (create_city_graph 단계로 미뤄도 상관 없음)
+        G_road.add_node(start_id,
+                        pos=(start_stop["lon"], start_stop["lat"]),
+                        name=start_stop["name"])
+
+        for j, end_stop in enumerate(stops[i+1:], start=i+1):
+            end_id = str(end_stop["id"])
+
+            # 좌표 유효성 검사
+            if not all(isinstance(coord, (int, float)) for coord in [end_stop["lon"], end_stop["lat"]]):
+                print(f"경고: 정류장 {end_id}의 좌표가 유효하지 않습니다.")
+                continue
+
+            # ─────── (A) 직선 거리 계산 & 로그 출력 ───────
+            raw_dist_km = geodesic(
+                (start_stop["lat"], start_stop["lon"]),
+                (end_stop["lat"], end_stop["lon"])
+            ).km
+            print(f"[{i},{j}]    ▶ 직선 거리 = {raw_dist_km:.3f}km  |  "
+                  f"{start_stop['name']} → {end_stop['name']}")
+
+            # ─────── (B) 0.3km 초과면 실제 API 호출 생략 ───────
+            if raw_dist_km > 1.0:
+                continue  # 0.3km 이상 떨어진 정류장 쌍은 패스
+
+            # ─────── (C) 캐시 키 생성 & 캐시 조회 ───────
+            cache_key = f"{start_id}_{end_id}"
+            if cache_key in path_cache:
+                cached = path_cache[cache_key]
+                path_coords = cached.get("path_coords")
+                distance = cached.get("distance")
+            else:
+                # 캐시에 없으면 실제 API 호출
+                time.sleep(0.2)  # (권장) 호출 간 짧은 대기
+                path_coords, distance = get_kakao_path(
+                    start_stop["lon"], start_stop["lat"],
+                    end_stop["lon"], end_stop["lat"]
+                )
+                if path_coords is not None and distance is not None:
+                    path_cache[cache_key] = {
+                        "path_coords": path_coords,
+                        "distance": distance
+                    }
+                    # 즉시 캐시 파일에 덮어쓰기(영구 저장)
+                    with open(CACHE_FILE, "w", encoding="utf-8") as _cf:
+                        json.dump(path_cache, _cf, ensure_ascii=False, indent=2)
+
+            # ─────── (D) G_road 와 roads 리스트에 추가 ───────
+            if path_coords and distance > 0:
+                G_road.add_edge(start_id, end_id,
+                                weight=distance,
+                                width=MIN_ROAD_WIDTH)
+                roads.append({
+                    "id":         f"road_{start_id}_{end_id}",
+                    "start":      {"lat": start_stop["lat"], "lon": start_stop["lon"]},
+                    "end":        {"lat": end_stop["lat"],     "lon": end_stop["lon"]},
+                    "length":     distance,
+                    "width":      MIN_ROAD_WIDTH,
+                    "path_coords": path_coords
+                })
+
+    # 1-2) 이제 G_road와 roads 리스트가 완성되었으므로,
+    #       create_city_graph 단계에서 사용하기 위해 변수로 전달한다.
+    pois = load_poi_data()  # POI는 별도로 로드
+    target_graph = create_city_graph(stops, pois, roads, G_road)
+
+    # ────────────────────────────────────────────────
+    # 이하 기존 코드: genetic_algorithm → schedule_buses → display_routes 등
+    # ────────────────────────────────────────────────
     print(f"\n2. {target_city}에 최적 버스 노선 생성 중...")
-    routes = genetic_algorithm(target_graph, reference_weights, num_routes, stops, pois, nodes, link_geo, transfer_stop_ids)
+    routes = genetic_algorithm(target_graph, reference_weights,
+                               num_routes, stops, pois, nodes, link_geo, transfer_stop_ids)
 
     print(f"\n3. 버스 배차 계획 수립 중...")
     schedule = schedule_buses(routes, target_graph, num_buses)
@@ -889,9 +1020,12 @@ def generate_bus_routes(reference_weights, target_city, num_routes, num_buses, b
 
     print_route_summary(routes, target_graph, schedule, frequencies, reference_weights)
     print(f"\n4. 노선도 생성 중...")
-    map_html = display_routes(target_graph, routes, schedule, frequencies, kakao_data["roads"])
+    map_html = display_routes(target_graph, routes, schedule, frequencies, roads)
 
     return routes, schedule, frequencies, map_html
+
+
+
 
 # 명령줄 인터페이스
 if __name__ == "__main__":

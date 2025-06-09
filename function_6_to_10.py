@@ -5,10 +5,9 @@ import pandas as pd
 
 
 # 1. 정류장별 통과노선 데이터 로드 (https://gits.gg.go.kr/gtdb/web/trafficDb/publicTransport/routeByBusStop.do 여기서 데이터 가져왔습니다.)
-transfer_df = pd.read_excel(
-    "정류장별_통과노선.xlsx",  
-    sheet_name="RouteBybusStop",
-    header=1                   # 두 번째 행을 컬럼명으로 사용
+transfer_df = pd.read_json(
+    r"C:\Users\지동우\Downloads\정류장별_통과노선.json",
+    encoding='utf-8' 
 )
 
 # '통과노선수' 컬럼이 2 이상인 정류장 ID 리스트 생성
@@ -19,19 +18,19 @@ transfer_stop_ids = transfer_df.loc[
 
 
 # 2. 과천시 교통 노드 데이터 로드 
-with open("과천시_교통노드.json", "r", encoding="utf-8") as f:
+with open(r"C:\Users\지동우\Downloads\과천시_교통노드 (1).json", "r", encoding="utf-8") as f:
     node_geo = json.load(f)
 nodes = [
     {
-        "latitude": feat["geometry"]["coordinates"][1],
-        "longitude": feat["geometry"]["coordinates"][0],
-        "node_type": feat["properties"].get("node_type")
+        "latitude": item["latitude"],
+        "longitude": item["longitude"],
+        "node_type": item.get("nd_type_h")  # 또는 'nd_type_h'로 필요시 수정
     }
-    for feat in node_geo["response"]["result"]["featureCollection"]["features"]
+    for item in node_geo
 ]
 
 # 3. 과천시 교통 링크 데이터 로드 
-with open("과천시_교통링크.json", "r", encoding="utf-8") as f:
+with open(r"C:\Users\지동우\Downloads\과천시_교통링크.json", "r", encoding="utf-8") as f:
     link_geo = json.load(f)
 
 

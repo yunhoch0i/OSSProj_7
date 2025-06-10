@@ -5,8 +5,8 @@ from typing import List, Dict
 import os
 
 # location_name = "연천군"
-# location_name = "고양시"
-location_name = "용인시"
+location_name = "고양시"
+# location_name = "용인시"
 
 class GPTAssistantAnalyzer:
     def __init__(self, api_key: str):
@@ -88,28 +88,6 @@ class GPTAssistantAnalyzer:
             print(f"분석 진행 중... 상태: {run.status}")
         
         raise TimeoutError("분석 시간 초과")
-    
-    def normalize_key(self, key: str) -> str:
-        """키 정규화"""
-        key_mapping = {
-            '노선길이': '노선 길이',
-            '정류장간거리': '정류장 간 거리', 
-            'poi정보': 'POI 정보',
-            '지하철역거리': '지하철 역과의 거리',
-            '유동인구': '유동인구',
-            '지역공정성': '지역 공정성',
-            '환승여부': '환승 여부',
-            '교통링크': '교통 링크',
-            '교통노드': '교통 노드',
-            '정류장수': '정류장 수'
-        }
-        
-        key_lower = key.replace(' ', '').lower()
-        for k, v in key_mapping.items():
-            if k.replace(' ', '').lower() in key_lower:
-                return v
-        return key
-
     
     def cleanup(self):
         """리소스 정리"""

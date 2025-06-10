@@ -36,9 +36,9 @@ def search_category_nearby(
     return meta.get("total_count", 0)
 
 # 3) 정류장 엑셀 전처리
-df = pd.read_excel(
-    r"C:\Users\지동우\Desktop\공소 자료\project\정류장 위치\과천시_버스_정류장_위치.xlsx",
-    header=1
+df = pd.read_json(
+    r"정류장위치/과천시_버스_정류장_위치.json",
+    encoding='utf-8'
 )
 
 # 필요한 컬럼만 선택하고 이름 정리
@@ -98,7 +98,7 @@ for stop in stops:
 
 # 6) DataFrame 생성 및 CSV 저장
 poi_df = pd.DataFrame(poi_data)
-output_file = "bus_stop_poi.csv"
+output_file = "bus_stop.csv"
 poi_df.to_csv(output_file, index=False, encoding='utf-8-sig')
 print(f"POI 정보가 {output_file}에 저장되었습니다.")
 
